@@ -1,160 +1,126 @@
-import os, keyboard, psutil, sys
+# python
+import os
+import sys
+import threading
+import time
 import subprocess
-from tkinter import *
-from tkinter import ttk
-from tkinter import messagebox
+import psutil
 import tkinter as tk
+from tkinter import ttk, messagebox
 
-"""
-process_name = "BloonsTD6.exe"
+SCRIPT_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "btd6botv1", "scripts"))
 
-def check_process_running(process_name):
-    for proc in psutil.process_iter(['name']):
-        if proc.info['name'] == process_name:
-            return True
-    return False
-
-if check_process_running(process_name):
-        pass
-else:
-        messagebox.showerror("PROCESS NOT FOUND", "bloonstd6.exe was not found")
-        sys.exit()
-"""
-
-# Function to get the list of script files in a directory
 def get_script_list(directory):
-    script_list = []
-    for filename in os.listdir(directory):
-        script_list.append(filename)
-    return script_list
+    if not os.path.isdir(directory):
+        return []
+    return sorted([f for f in os.listdir(directory) if f.endswith(".py")])
 
-# Directory containing the scripts
-script_directory = r"btd6botv1\scripts"
+script_options = get_script_list(SCRIPT_DIR)
 
-# Get the list of scripts
-script_options = get_script_list(script_directory)
-
-# Function to validate the hotkey entry
 def validate_hotkey(char):
-    if len(char) == 1 and char.isalnum():
-        return True
-    return False
+    # einfache Prüfung: nicht leer (keyboard lib erfordert evtl. root auf Linux)
+    return len(char.strip()) > 0
 
+def run_script_once(script_path):
+    try:
+        subprocess.run([sys.executable, script_path], check=True)
+    except subprocess.CalledProcessError as e:
+        messagebox.showerror("Fehler", f"Script fehlgeschlagen: {e}")
+    except Exception as e:
+        messagebox.showerror("Fehler", str(e))
 
-def runscript():
-    selected_script = select.get()
-    if selected_script:
-        script_path = os.path.join(script_directory, selected_script)
+def run_script_loop(script_path, stop_event):
+    while not stop_event.is_set():
         try:
-            subprocess.run(['python', script_path], check=True)
-        except subprocess.CalledProcessError as e:
-            messagebox.showerror("Error", f"Failed to run script: {e}")
-    else:
-        messagebox.showwarning("No Script Selected", "Please select a script to run.")
+            proc = subprocess.Popen([sys.executable, script_path])
+            # Warte auf Ende oder Stop
+            while proc.poll() is None:
+                if stop_event.is_set():
+                    proc.terminate()
+                    break
+                time.sleep(0.2)
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Loop-Fehler: {e}")
+            break
+        # kurze Pause zwischen Durchläufen
+        time.sleep(0.5)
 
-    def run_infinite():
-        while checkbox_var.get():  # Run as long as the checkbox is checked
-            subprocess.run(['python', script_path])  # Replace 'python' with your interpreter if needed
+class App:
+    def __init__(self, root):
+        self.root = root
+        self.root.geometry("300x400")
+        self.root.title("BTD6 BOT")
+        self.root.config(background="#111810")
 
-        # Start running the script infinitely when checkbox is checked
+        ttk.Label(root, text="Select a script:", foreground='#0080FE', background='#111810').pack(pady=10)
+        self.select = ttk.Combobox(root, values=script_options, state="readonly")
+        self.select.pack(pady=10)
 
-    if checkbox_var.get():
-        run_infinite()
-def mainapp():
-    selected_item = select.get()
-    hotkey = entry.get()
-    keyboard.add_hotkey(hotkey=hotkey,callback=runscript)
+        ttk.Label(root, text="Select hotkey (RESTART PROGRAM TO DELETE):", foreground='#0080FE', background='#111810').pack(pady=10)
 
-def stop():
-    # Function to close the Tkinter window
-    sys.exit()
-    root.destroy()
-    # Function to terminate another process
-    process_name = "BloonsTD6.exe"
+        vcmd = (root.register(validate_hotkey), '%P')
+        self.entry = tk.Entry(root, validate="key", validatecommand=vcmd)
+        self.entry.pack(pady=10)
 
-    # Find and terminate the process
-    for proc in psutil.process_iter(['name']):
-        if proc.info['name'] == process_name:
-            proc.terminate()
-            break  # Terminate only the first matching process found
+        tk.Button(root, text="Confirm", command=self.confirm).pack(pady=10)
 
-def checkbox_changed():
-    if checkbox_var.get():
-        runscript()
+        self.checkbox_var = tk.BooleanVar()
+        tk.Checkbutton(root, text="Run Script Infinitely", variable=self.checkbox_var, command=self.checkbox_changed).pack(pady=20)
 
-root = Tk()
+        tk.Button(root, text="STOP", fg="white", bg="red", command=self.stop).pack(pady=10)
 
-root.geometry("300x400")
-root.title("BTD6 BOT")
+        self.loop_thread = None
+        self.loop_stop_event = threading.Event()
 
-icon = PhotoImage(file="btd6botpic.png")
-root.iconphoto(True,icon)
-root.config(background="#111810")
+    def confirm(self):
+        self.hotkey = self.entry.get().strip()
+        self.selected_script = self.select.get()
+        if not self.selected_script:
+            messagebox.showwarning("Keine Auswahl", "Bitte ein Script wählen.")
+            return
+        if not validate_hotkey(self.hotkey):
+            messagebox.showwarning("Hotkey ungültig", "Bitte gültigen Hotkey eingeben.")
+            return
+        # Hinweis: keyboard.register kann Root-Rechte benötigen; hier nur speichern
+        messagebox.showinfo("Bestätigt", f"Hotkey: {self.hotkey} für {self.selected_script}")
 
-options = Label(root,
-                text="Select a script:",
-                fg='#0080FE',
-                bg='#111810',
-                )
-options.pack(pady=10)
+    def _start_script_thread(self, repeat=False):
+        script_path = os.path.join(SCRIPT_DIR, self.select.get())
+        if not os.path.isfile(script_path):
+            messagebox.showerror("Fehler", "Script nicht gefunden.")
+            return
+        if repeat:
+            if self.loop_thread and self.loop_thread.is_alive():
+                return
+            self.loop_stop_event.clear()
+            self.loop_thread = threading.Thread(target=run_script_loop, args=(script_path, self.loop_stop_event), daemon=True)
+            self.loop_thread.start()
+        else:
+            threading.Thread(target=run_script_once, args=(script_path,), daemon=True).start()
 
-select = ttk.Combobox(root,
-                 values=script_options,
-                 state="readonly",
-                 foreground='#0080FE',
-                 background='#111810'
-                 )
-select.pack(pady=10)
+    def checkbox_changed(self):
+        if self.checkbox_var.get():
+            self._start_script_thread(repeat=True)
+        else:
+            self.loop_stop_event.set()
 
-hotkeyexplain = Label(root,
-                      text="Select hotkey (RESART PROGRAM TO DELETE):",
-                      fg='#0080FE',
-                      bg='#111810',
-                      )
-hotkeyexplain.pack(pady=10)
+    def stop(self):
+        # Stoppe lokale Threads
+        self.loop_stop_event.set()
+        # Versuche externen Prozess zu terminieren
+        target = "BloonsTD6.exe"
+        for proc in psutil.process_iter(['name']):
+            try:
+                if proc.info.get('name') == target:
+                    proc.terminate()
+                    break
+            except Exception:
+                pass
+        # Schließe GUI
+        self.root.destroy()
+        sys.exit(0)
 
-validate_cmd = root.register(validate_hotkey)
-entry = Entry(root,
-                  fg='#111810',
-                  bg='#0080FE',
-                  validate="key",
-                  validatecommand=(validate_cmd, '%P'),
-                  )
-entry.pack(pady=10)
-
-confirm = Button(root,
-                text="Confirm",
-                command=mainapp,
-                fg='#0080FE',
-                bg='#111810',
-                )
-confirm.pack(pady=10)
-
-# Create a checkbox variable
-checkbox_var = tk.BooleanVar()
-
-# Function to handle checkbox state change
-
-
-# Create a checkbox
-checkbox = Checkbutton(root,
-                        text="Run Script Infinitely",
-                        fg='#0080FE',
-                        bg='#111810',
-                        activeforeground='#0080FE',
-                        activebackground='#111810',
-                        variable=checkbox_var,
-                        command=checkbox_changed,
-                     )
-checkbox.pack(pady=20)
-
-emergencystop = Button(root,
-                           text="STOP",
-                           command=stop,
-                           fg="white",
-                           bg="red",
-                           activeforeground="white",
-                           activebackground="red",
-                           )
-emergencystop.pack(pady=10)
-root.mainloop()
+if __name__ == "__main__":
+    root = tk.Tk()
+    App(root)
+    root.mainloop()
