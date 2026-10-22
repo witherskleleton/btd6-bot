@@ -2,21 +2,9 @@ import time
 from pynput.mouse import Controller, Button
 from pynput.keyboard import Controller as KeyboardController
 
-# Konstanten
-COORDINATES = {
-    'start': (832, 923),
-    'click_1': (1339, 965),
-    'click_2': (1390, 558),
-    'click_3': (617, 417),
-    'click_4': (1270, 438),
-    'move_1': (1568, 481),
-    'moab_select': (85, 369),
-    'moab_confirm': (1534, 609),
-    'hero': (833, 732),
-    'final_1': (957, 889),
-    'final_2': (957, 886),
-    'final_3': (719, 843),
-}
+from coordinates import load_coordinates
+
+COORDINATES = load_coordinates()
 
 TIMINGS = {
     'initial': 3,
@@ -33,6 +21,7 @@ keyboard = KeyboardController()
 
 def click_and_wait(x, y, wait_time=TIMINGS['default']):
     """Klick auf Koordinaten und warten"""
+    mouse.position = (x, y)
     mouse.click(Button.left, 1)
     time.sleep(wait_time)
 
